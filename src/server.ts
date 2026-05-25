@@ -29,8 +29,21 @@ const app = express();
 
 // ─── Security & Utility Middleware ────────────────────────────────────────────
 app.use(helmet());
+
+// FRONTEND_URL may be a comma-separated list, e.g.:
+//   "http://localhost:3000,https://trimtimes.vercel.app"
+const allowedOrigins = env.FRONTEND_URL
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: env.FRONTEND_URL,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, Postman, server-to-server)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} not allowed`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Authorization', 'Content-Type'],
@@ -62,16 +75,18 @@ app.use('/api/:tenant/customer', tenantContext, customerRoutes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// ─── Start Server ─────────────────────────────────────────────────────────────
-const server = app.listen(env.PORT, () => {
-  console.log(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);
-});
-
-process.on('SIGTERM', async () => {
-  server.close(async () => {
-    await disconnectAll();
-    process.exit(0);
+// ─── Start Server (skip in Vercel serverless — app is exported as handler) ────
+if (!process.env.VERCEL) {
+  const server = app.listen(env.PORT, () => {
+    console.log(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);
   });
-});
+
+  process.on('SIGTERM', async () => {
+    server.close(async () => {
+      await disconnectAll();
+      process.exit(0);
+    });
+  });
+}
 
 export default app;
