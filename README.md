@@ -1,31 +1,44 @@
-# Barber Appointment System — Backend
+# TrimTimes — Backend API
 
-Multi-tenant REST API for barber shop appointment management. Each shop (tenant) gets a fully isolated PostgreSQL schema — complete data separation at the database level with no row-level filters required.
+REST API for the TrimTimes multi-tenant barber appointment system. Built with Node.js, Express, Prisma ORM, and PostgreSQL.
 
-## Architecture
-
-```
-public schema (shared)
-  └── tenants         — registry of all barber shops
-  └── super_admins    — platform admin accounts
-
-tenant_<shop>_<id> schema (per shop)
-  └── users           — barbers + customers for that shop
-  └── services        — menu of services
-  └── appointments    — bookings
-```
-
-Every tenant-scoped request resolves the shop's schema name, then uses a cached `PrismaClient` instance pointing to `?schema=<schema_name>`. PostgreSQL's `search_path` ensures all queries stay inside that schema.
+---
 
 ## Tech Stack
 
-- **Node.js / Express / TypeScript**
-- **Prisma ORM** — `prisma/schema.prisma` (global), `prisma/tenant.prisma` (per-tenant types)
-- **PostgreSQL** — schema-based multi-tenancy
-- **JWT** — stateless authentication
-- **bcryptjs** — password hashing
+| Layer | Technology |
+|---|---|
+| Runtime | Node.js + TypeScript |
+| Framework | Express.js |
+| ORM | Prisma v5 |
+| Database | PostgreSQL (NeonDB) |
+| Auth | JWT (access + refresh tokens) |
+| Password hashing | bcryptjs |
+| Validation | express-validator |
 
-## Quick Start
+---
+
+## Architecture
+
+All data lives in a **single PostgreSQL database** (public schema). Tenants are identified by a `tenant_id` foreign key on every shared table. Tenant identity is resolved per-request via subdomain, URL parameter, or `x-tenant-id` header.
+
+```
+public schema
+├── super_admins       — platform admin accounts
+├── tenants            — registered barber shops
+├── customers          — end-users who book appointments
+├── refresh_tokens     — token rotation store
+├── treatments         — services offered per shop
+├── artisans           — staff members per shop
+├── shop_hours         — weekly open/close schedule per shop
+├── shop_locations     — address + map embed per shop
+├── reviews            — customer reviews per shop
+└── appointments       — bookings (linked to tenant, customer, treatment, artisan)
+```
+
+---
+
+## Setup
 
 ### 1. Install dependencies
 ```bash
@@ -35,148 +48,265 @@ npm install
 ### 2. Configure environment
 ```bash
 cp .env.example .env
-# Edit .env — set DATABASE_URL, JWT_SECRET
+# Edit .env — fill in DATABASE_URL, JWT_SECRET, JWT_REFRESH_SECRET
 ```
 
-### 3. Generate Prisma clients
+### 3. Generate Prisma client
 ```bash
 npm run prisma:generate
-# This runs `prisma generate` twice:
-#   once for the global schema  → node_modules/@prisma/client
-#   once for tenant models      → src/generated/prisma-tenant
 ```
 
-### 4. Run database migrations (global schema only)
+### 4. Run database migrations
 ```bash
 npm run prisma:migrate
-# Creates the `tenants` and `super_admins` tables in the public schema
 ```
 
-### 5. Seed demo data
+### 5. Seed demo data (optional)
 ```bash
 npm run seed
-# Creates: 1 super admin, 3 demo shops with barbers, customers, services, appointments
+# Creates: 1 super admin, demo shops, artisans, treatments, appointments
 ```
 
 ### 6. Start development server
 ```bash
 npm run dev
+# Runs on http://localhost:4000
 ```
+
+---
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string | — |
-| `JWT_SECRET` | Secret for signing JWTs | — |
-| `JWT_EXPIRES_IN` | Token lifetime | `7d` |
-| `PORT` | HTTP port | `5000` |
-| `NODE_ENV` | Environment | `development` |
-| `FRONTEND_URL` | CORS allowed origin | `http://localhost:3000` |
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_SECRET` | Secret for signing access tokens |
+| `JWT_REFRESH_SECRET` | Secret for signing refresh tokens |
+| `JWT_ACCESS_EXPIRES_IN` | Access token lifetime (e.g. `1h`) |
+| `JWT_REFRESH_EXPIRES_IN` | Refresh token lifetime (e.g. `7d`) |
+| `PORT` | HTTP port (default `4000`) |
+| `NODE_ENV` | `development` or `production` |
+| `FRONTEND_URL` | Allowed CORS origin |
+
+---
+
+## npm Scripts
+
+```bash
+npm run dev              # Start with hot-reload (tsx + nodemon)
+npm run build            # Compile TypeScript to dist/
+npm run start            # Run compiled output
+npm run prisma:generate  # Regenerate Prisma client
+npm run prisma:migrate   # Apply database migrations
+npm run prisma:studio    # Open Prisma Studio GUI
+npm run seed             # Seed demo data
+```
+
+---
 
 ## API Reference
 
-### Tenant Identification
+Base URL: `http://localhost:4000`
 
-For tenant-scoped routes supply the shop's subdomain via either:
-- **URL param**: `/api/downtown-cuts/auth/login`
-- **Header**: `x-tenant-id: downtown-cuts`
+### Health Check
+
+```
+GET /health
+```
+Returns `{ status: "ok", timestamp: "..." }`.
 
 ---
 
-### Admin Routes — `POST /api/admin/login`
+### Super Admin — `/api/admin`
 
-No tenant context needed.
+No tenant context required. All routes except login require a `SUPER_ADMIN` Bearer token.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/admin/login` | — | Super admin login |
-| POST | `/api/admin/tenants` | SUPER_ADMIN | Create new tenant + provision schema |
-| GET | `/api/admin/tenants` | SUPER_ADMIN | List all tenants |
-| PATCH | `/api/admin/tenants/:id` | SUPER_ADMIN | Update tenant status |
-| DELETE | `/api/admin/tenants/:id` | SUPER_ADMIN | Delete tenant + drop schema |
-| GET | `/api/admin/stats` | SUPER_ADMIN | Platform dashboard stats |
+| POST | `/api/admin/login` | — | Login, returns JWT |
+| GET | `/api/admin/tenants` | Bearer | List all shops |
+| POST | `/api/admin/tenants` | Bearer | Create a new shop |
+| PATCH | `/api/admin/tenants/:id` | Bearer | Update shop status (`ACTIVE` / `INACTIVE` / `SUSPENDED` / `PENDING`) |
+| DELETE | `/api/admin/tenants/:id` | Bearer | Delete a shop |
+| GET | `/api/admin/stats` | Bearer | Platform-level stats (total shops, bookings, revenue) |
+
+**Login body:**
+```json
+{ "email": "admin@example.com", "password": "pass1234" }
+```
+
+**Create tenant body:**
+```json
+{ "shopName": "Downtown Cuts", "subdomain": "downtown-cuts", "ownerEmail": "owner@example.com" }
+```
 
 ---
 
-### Auth Routes — `/api/:tenant/auth`
+### Shop Auth — `/api/v1/shops`
+
+Public routes for shop registration and login.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/:tenant/auth/register` | — | Customer self-registration |
-| POST | `/api/:tenant/auth/login` | — | Barber / customer login |
-| POST | `/api/:tenant/auth/logout` | Bearer | Logout (client drops token) |
-| GET | `/api/:tenant/auth/me` | Bearer | Get current user profile |
+| GET | `/api/v1/shops` | — | List all active shops |
+| POST | `/api/v1/shops/register` | — | Register a new shop account |
+| POST | `/api/v1/shops/login` | — | Shop login, returns access + refresh tokens |
+
+**Login body:**
+```json
+{ "email": "owner@shop.com", "password": "secret", "tenantId": "shop-slug" }
+```
 
 ---
 
-### Barber Routes — `/api/:tenant/barber` (role: BARBER)
+### Shop Public Reads — `/api/v1/shops/:slug`
+
+No auth required. Used by the public shop page and booking wizard.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/:tenant/barber/services` | List all services |
-| POST | `/api/:tenant/barber/services` | Create service |
-| PATCH | `/api/:tenant/barber/services/:id` | Update service |
-| DELETE | `/api/:tenant/barber/services/:id` | Delete service |
-| GET | `/api/:tenant/barber/appointments` | List appointments (filter by `?status=` `&date=YYYY-MM-DD`) |
-| PATCH | `/api/:tenant/barber/appointments/:id` | Update appointment status |
-| GET | `/api/:tenant/barber/dashboard/stats` | Shop stats |
+| GET | `/api/v1/shops/:slug/profile` | Shop name, description, rating, contact |
+| GET | `/api/v1/shops/:slug/treatments` | All treatments (services) |
+| GET | `/api/v1/shops/:slug/hours` | Weekly open/close schedule |
+| GET | `/api/v1/shops/:slug/location` | Address and map embed URL |
+| GET | `/api/v1/shops/:slug/artisans` | Staff members |
+| GET | `/api/v1/shops/:slug/reviews` | Customer reviews |
+| GET | `/api/v1/shops/:slug/available-slots` | Available time slots for a date (see below) |
+
+**Available slots query params:**
+
+| Param | Required | Description |
+|---|---|---|
+| `date` | Yes | `YYYY-MM-DD` |
+| `treatmentId` | Yes | UUID of the treatment (used for duration) |
+| `artisanId` | No | UUID — scopes slot check to one artisan; omit for shop-wide |
+
+Slot generation logic:
+1. Checks the shop's open hours for that day — returns `{ shopClosed: true }` if closed.
+2. Generates 30-minute candidate slots within open hours that can fit the treatment duration.
+3. Removes any slot whose time range overlaps an existing `PENDING` or `CONFIRMED` appointment (artisan-scoped if `artisanId` is given, otherwise shop-wide).
+4. Returns remaining open slots as `["09:00", "09:30", ...]`.
 
 ---
 
-### Customer Routes — `/api/:tenant/customer` (role: CUSTOMER)
+### Shop Management — `/api/v1/shops` (JWT required)
+
+All routes require a valid shop Bearer token. The tenant is resolved from the JWT payload.
+
+**Appointments**
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/:tenant/customer/services` | Browse available services |
-| POST | `/api/:tenant/customer/appointments` | Book appointment |
-| GET | `/api/:tenant/customer/appointments` | My appointments |
-| PATCH | `/api/:tenant/customer/appointments/:id` | Cancel appointment |
-| GET | `/api/:tenant/customer/profile` | Get profile |
-| PATCH | `/api/:tenant/customer/profile` | Update profile |
+| GET | `/api/v1/shops/appointments` | List shop appointments (filter: `?status=&date=YYYY-MM-DD`) |
+| PATCH | `/api/v1/shops/appointments/:id/status` | Update appointment status (`PENDING` / `CONFIRMED` / `COMPLETED` / `CANCELLED`) |
+
+**Profile**
+
+| Method | Path | Description |
+|---|---|---|
+| PUT | `/api/v1/shops/profile` | Update shop name, description, phone, email, banner |
+
+**Treatments**
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/shops/treatments` | Create a treatment |
+| PUT | `/api/v1/shops/treatments/:id` | Update a treatment |
+| DELETE | `/api/v1/shops/treatments/:id` | Delete a treatment |
+
+**Hours**
+
+| Method | Path | Description |
+|---|---|---|
+| PUT | `/api/v1/shops/hours` | Save the full weekly schedule (7 days, `isOpen`, `openTime`, `closeTime`) |
+
+**Location**
+
+| Method | Path | Description |
+|---|---|---|
+| PUT | `/api/v1/shops/location` | Save address fields and Google Maps embed URL |
+
+**Artisans**
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/shops/artisans` | Add a staff member |
+| PUT | `/api/v1/shops/artisans/:id` | Update a staff member |
+| DELETE | `/api/v1/shops/artisans/:id` | Remove a staff member |
+
+**Reviews**
+
+| Method | Path | Description |
+|---|---|---|
+| PATCH | `/api/v1/shops/reviews/:id` | Toggle `isFeatured` on a review |
+
+---
+
+### Customer Auth — `/api/v1/users`
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/users/register` | Register a new customer account |
+| POST | `/api/v1/users/login` | Login, returns access + refresh tokens |
+
+---
+
+### Token Management — `/api/v1/auth`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/v1/auth/refresh` | httpOnly cookie | Issue a new access token |
+| POST | `/api/v1/auth/logout` | Bearer | Revoke refresh token |
+| GET | `/api/v1/auth/me` | Bearer | Get current user profile |
+
+---
+
+### Customer Appointments — `/api/v1/appointments`
+
+All routes require a customer Bearer token.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/appointments` | Book an appointment |
+| GET | `/api/v1/appointments/my` | Get all my appointments |
+| DELETE | `/api/v1/appointments/:id` | Cancel an appointment |
+
+**Book body:**
+```json
+{
+  "tenantSlug": "downtown-cuts",
+  "treatmentId": "<uuid>",
+  "artisanId": "<uuid>",
+  "appointmentDate": "2026-06-01",
+  "appointmentTime": "10:00",
+  "notes": "Skin fade please"
+}
+```
+
+Booking enforces artisan-aware conflict detection: if `artisanId` is provided the system checks only that artisan's calendar; otherwise it checks shop-wide. A `409 SLOT_TAKEN` is returned if the time range overlaps any existing `PENDING` or `CONFIRMED` appointment.
 
 ---
 
 ## Authentication Flow
 
-1. Call login endpoint → receive `{ token, user }`
-2. Store the JWT client-side
-3. Send on all protected requests:
-   ```
-   Authorization: Bearer <token>
-   x-tenant-id: <subdomain>   (or use URL param)
-   ```
-4. JWT payload contains: `{ id, email, role, tenantId, schemaName }`
-
-## Tenant Creation Flow (Super Admin)
-
-1. `POST /api/admin/tenants` with `{ shopName, subdomain, ownerEmail }`
-2. API validates subdomain uniqueness
-3. Generates a unique `schemaName` (e.g. `tenant_downtown_cuts_a1b2c3`)
-4. Inserts tenant record in `public.tenants`
-5. Runs DDL to create the PostgreSQL schema + tables + enum types
-6. Returns the new tenant object
-
-Use the returned `subdomain` for all subsequent shop requests.
-
-## Demo Credentials (after seeding)
-
-| Role | Email | Password | Tenant |
-|---|---|---|---|
-| Super Admin | admin@barbersystem.com | admin123 | — |
-| Barber | barber@downtown-cuts.com | password123 | downtown-cuts |
-| Barber | barber@elite-grooming.com | password123 | elite-grooming |
-| Barber | barber@classic-blades.com | password123 | classic-blades |
-| Customer | customer1@...test | password123 | any shop |
-
-## Scripts
-
-```bash
-npm run dev            # Start with hot-reload (tsx + nodemon)
-npm run build          # Compile to dist/
-npm run start          # Run compiled output
-npm run prisma:generate  # Generate both Prisma clients
-npm run prisma:migrate   # Run global schema migrations
-npm run prisma:studio    # Open Prisma Studio (global schema)
-npm run seed           # Seed demo data
 ```
+1. POST /login  →  { accessToken, refreshToken (httpOnly cookie) }
+2. Attach to requests:  Authorization: Bearer <accessToken>
+3. On 401 TOKEN_EXPIRED  →  POST /api/v1/auth/refresh  →  new accessToken
+4. POST /api/v1/auth/logout  →  refresh token revoked
+```
+
+JWT payload shape:
+```json
+{ "sub": "<entity-id>", "email": "...", "role": "shop | customer | SUPER_ADMIN" }
+```
+
+---
+
+## Assumptions
+
+- Multi-tenancy is implemented via **shared tables + `tenant_id` row isolation** (not PostgreSQL schema-per-tenant). Each shop's data is logically isolated through foreign key scoping — no cross-tenant query is possible through the API layer.
+- Shop registration creates a record in `PENDING` status. A super admin must set it to `ACTIVE` before the shop can accept bookings.
+- Appointment time slots are generated in **30-minute increments** within a shop's open hours. The treatment duration determines how many slots are consumed per booking.
+- Customers are global (not per-shop) — one account can book at any active shop.
+- Refresh tokens are stored as bcrypt hashes in the `refresh_tokens` table for security.

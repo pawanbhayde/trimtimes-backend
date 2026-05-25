@@ -27,13 +27,26 @@ export async function bookAppointment(req: Request, res: Response, next: NextFun
     const treatment = await db.treatment.findFirst({ where: { id: treatmentId, tenantId: tenant.id, status: 'Active' } });
     if (!treatment) { apiError(res, 404, 'TREATMENT_NOT_FOUND', 'Treatment not found or inactive.'); return; }
 
-    const conflict = await db.appointment.findFirst({
+    // Artisan-aware conflict check with duration overlap detection.
+    // If an artisan is selected we scope to that artisan; otherwise we check shop-wide.
+    const toMins = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+    const newStart = toMins(appointmentTime);
+    const newEnd   = newStart + treatment.duration;
+
+    const sameDayAppts = await db.appointment.findMany({
       where: {
         tenantId: tenant.id,
         appointmentDate: new Date(appointmentDate),
-        appointmentTime,
         status: { in: ['PENDING', 'CONFIRMED'] },
+        ...(artisanId ? { artisanId } : {}),
       },
+      include: { treatment: { select: { duration: true } } },
+    });
+
+    const conflict = sameDayAppts.some((a) => {
+      const aStart = toMins(a.appointmentTime);
+      const aEnd   = aStart + a.treatment.duration;
+      return newStart < aEnd && newEnd > aStart;
     });
     if (conflict) { apiError(res, 409, 'SLOT_TAKEN', 'That time slot is already booked.'); return; }
 

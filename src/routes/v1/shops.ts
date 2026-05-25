@@ -58,6 +58,9 @@ router.get('/:slug/artisans', mgmtCtrl.getArtisans);
 // GET /api/v1/shops/:slug/reviews
 router.get('/:slug/reviews', mgmtCtrl.getReviews);
 
+// GET /api/v1/shops/:slug/available-slots?date=YYYY-MM-DD&treatmentId=&artisanId=
+router.get('/:slug/available-slots', mgmtCtrl.getAvailableSlots);
+
 // ─── Shop appointments (barber JWT) ────────────────────────────────────────────
 
 // GET  /api/v1/shops/appointments

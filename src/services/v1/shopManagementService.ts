@@ -417,3 +417,94 @@ export async function toggleReviewFeatured(tenantId: string, reviewId: string, i
     isFeatured: r.isFeatured,
   };
 }
+
+// ─── Available Slots ──────────────────────────────────────────────────────────
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function toMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function toTimeString(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+/**
+ * Returns available 30-min time slots for a given date, treatment, and optional artisan.
+ *
+ * Logic:
+ *  1. Determine the day of week and look up shop hours — return shopClosed if not open.
+ *  2. Generate all 30-min candidate slots within open hours that fit the treatment duration.
+ *  3. Fetch existing PENDING/CONFIRMED appointments for that date.
+ *     - Filtered by artisanId if provided, otherwise shop-wide.
+ *  4. Remove any candidate slot whose time range overlaps with a booked appointment range.
+ */
+export async function getAvailableSlots(
+  slug: string,
+  date: string,          // YYYY-MM-DD
+  treatmentId: string,
+  artisanId: string | null,
+): Promise<{ slots: string[]; shopClosed: boolean }> {
+  const db = getPublicClient();
+  const tenant = await findTenantBySlug(slug);
+
+  // 1. Get treatment duration
+  const treatment = await db.treatment.findFirst({
+    where: { id: treatmentId, tenantId: tenant.id },
+    select: { duration: true },
+  });
+  if (!treatment) throw notFound('Treatment not found.');
+  const newDuration = treatment.duration;
+
+  // 2. Determine the day name from the date string (avoids TZ shift issues)
+  const [year, month, day] = date.split('-').map(Number);
+  const dayName = DAY_NAMES[new Date(year, month - 1, day).getDay()];
+
+  // 3. Check shop hours for that day
+  const shopDay = await db.shopHours.findUnique({
+    where: { tenantId_day: { tenantId: tenant.id, day: dayName } },
+  });
+  if (!shopDay || !shopDay.isOpen) {
+    return { slots: [], shopClosed: true };
+  }
+
+  // 4. Generate all 30-min slots within open hours that can fit the treatment
+  const openMins  = toMinutes(shopDay.openTime);
+  const closeMins = toMinutes(shopDay.closeTime);
+
+  const candidates: number[] = [];
+  for (let m = openMins; m + newDuration <= closeMins; m += 30) {
+    candidates.push(m);
+  }
+  if (candidates.length === 0) return { slots: [], shopClosed: false };
+
+  // 5. Fetch existing booked appointments for that date (artisan-scoped or shop-wide)
+  const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const endOfDay   = new Date(year, month - 1, day, 23, 59, 59, 999);
+
+  const booked = await db.appointment.findMany({
+    where: {
+      tenantId: tenant.id,
+      appointmentDate: { gte: startOfDay, lte: endOfDay },
+      status: { in: ['PENDING', 'CONFIRMED'] },
+      ...(artisanId ? { artisanId } : {}),
+    },
+    include: { treatment: { select: { duration: true } } },
+  });
+
+  // 6. Build booked time ranges [startMin, endMin)
+  const bookedRanges = booked.map((a) => ({
+    start: toMinutes(a.appointmentTime),
+    end:   toMinutes(a.appointmentTime) + a.treatment.duration,
+  }));
+
+  // 7. Keep only slots whose range [slotStart, slotStart+newDuration) doesn't overlap any booked range
+  const available = candidates.filter((slotStart) => {
+    const slotEnd = slotStart + newDuration;
+    return !bookedRanges.some((r) => slotStart < r.end && slotEnd > r.start);
+  });
+
+  return { slots: available.map(toTimeString), shopClosed: false };
+}

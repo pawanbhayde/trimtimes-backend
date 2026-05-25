@@ -58,6 +58,35 @@ export async function getReviews(req: Request, res: Response, next: NextFunction
   } catch (err) { handleServiceError(err, res, next); }
 }
 
+export async function getAvailableSlots(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { date, treatmentId, artisanId } = req.query as {
+      date?: string;
+      treatmentId?: string;
+      artisanId?: string;
+    };
+
+    if (!date || !treatmentId) {
+      res.status(400).json({ error: { code: 'MISSING_PARAMS', message: '`date` and `treatmentId` are required.' } });
+      return;
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ error: { code: 'INVALID_DATE', message: '`date` must be YYYY-MM-DD.' } });
+      return;
+    }
+
+    const result = await svc.getAvailableSlots(
+      req.params.slug,
+      date,
+      treatmentId,
+      artisanId ?? null,
+    );
+
+    res.json(result);
+  } catch (err) { handleServiceError(err, res, next); }
+}
+
 // ─── Shop Appointments (barber view) ─────────────────────────────────────────
 
 export async function listShopAppointments(req: Request, res: Response, next: NextFunction) {
