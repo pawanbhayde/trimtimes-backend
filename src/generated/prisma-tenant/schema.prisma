@@ -1,0 +1,236 @@
+// Global schema — manages tenants and super admins (public PostgreSQL schema).
+// Tenant models (User, Service, Appointment) are for type generation ONLY.
+// Actual tenant schemas are created via raw SQL in src/utils/tenantManager.ts
+//
+// Commands:
+//   prisma migrate dev          → apply global schema migrations
+//   prisma generate             → generate both prisma clients
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+generator tenantClient {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma-tenant"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Global Models ────────────────────────────────────────────────────────────
+
+model Tenant {
+  id          String       @id @default(uuid())
+  shopName    String       @map("shop_name")
+  subdomain   String       @unique
+  schemaName  String       @unique @map("schema_name")
+  ownerEmail  String       @map("owner_email")
+  ownerName   String?      @map("owner_name")
+  password    String?
+  description String?
+  email       String?
+  bannerUrl   String?      @map("banner_url")
+  phone       String?
+  address     String?
+  image       String?
+  rating      Float        @default(5.0)
+  status      TenantStatus @default(ACTIVE)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  hours      ShopHours[]
+  location   ShopLocation?
+  treatments Treatment[]
+  artisans   Artisan[]
+  reviews    Review[]
+
+  @@map("tenants")
+}
+
+model SuperAdmin {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("super_admins")
+}
+
+enum TenantStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+model Customer {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  fullName  String   @map("full_name")
+  email     String   @unique
+  phone     String
+  password  String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("customers")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique @map("token_hash")
+  role      String
+  entityId  String   @map("entity_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("refresh_tokens")
+}
+
+// ─── Shop Management Models ───────────────────────────────────────────────────
+
+model ShopHours {
+  id        String  @id @default(uuid())
+  tenantId  String  @map("tenant_id")
+  day       String
+  isOpen    Boolean @map("is_open")
+  openTime  String  @map("open_time")
+  closeTime String  @map("close_time")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, day])
+  @@map("shop_hours")
+}
+
+model ShopLocation {
+  id          String  @id @default(uuid())
+  tenantId    String  @unique @map("tenant_id")
+  street      String?
+  city        String?
+  state       String?
+  zip         String?
+  country     String?
+  latitude    Float?
+  longitude   Float?
+  mapEmbedUrl String? @map("map_embed_url")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("shop_locations")
+}
+
+model Treatment {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String
+  description String?
+  price       Float
+  duration    Int
+  status      String   @default("Active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("treatments")
+}
+
+model Artisan {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  name      String
+  specialty String?
+  bio       String?
+  avatarUrl String?  @map("avatar_url")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("artisans")
+}
+
+model Review {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  customerName String   @map("customer_name")
+  rating       Int
+  comment      String?
+  isFeatured   Boolean  @default(false) @map("is_featured")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("reviews")
+}
+
+// ─── Tenant Models (type generation only — not migrated) ──────────────────────
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  fullName  String   @map("full_name")
+  phone     String?
+  role      UserRole
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  appointments Appointment[] @relation("CustomerAppointments")
+
+  @@map("users")
+}
+
+model Service {
+  id          String        @id @default(uuid())
+  name        String
+  description String?
+  duration    Int
+  price       Decimal       @db.Decimal(10, 2)
+  status      ServiceStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  appointments Appointment[]
+
+  @@map("services")
+}
+
+model Appointment {
+  id              String            @id @default(uuid())
+  customerId      String            @map("customer_id")
+  serviceId       String            @map("service_id")
+  appointmentDate DateTime          @map("appointment_date")
+  appointmentTime String            @map("appointment_time")
+  status          AppointmentStatus @default(PENDING)
+  notes           String?
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  customer User    @relation("CustomerAppointments", fields: [customerId], references: [id], onDelete: Cascade)
+  service  Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@map("appointments")
+}
+
+enum UserRole {
+  BARBER
+  CUSTOMER
+}
+
+enum ServiceStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
